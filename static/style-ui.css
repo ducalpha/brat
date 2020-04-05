@@ -129,11 +129,14 @@ body .ui-widget {
 .span_norm_txt_input {
   background-color: #eaf4fd;
 }
-input.valid_value {
+input[data-value="valid"] {
   background-color: #ccffcc;
 }
-input.invalid_value {
+input[data-value="invalid"] {
   background-color: #ffcccc;
+}
+input[data-value="multi"] {
+  background-color: #ccccff;
 }
 #norm_search_result_select {
   height: 200px;
@@ -272,7 +275,7 @@ div.scroll_wrapper_upper div.scroller {
 } 
 /* END new entity and event dialog style */
 
-.small-buttons .ui-button-text {
+.small-buttons .ui-button-text, .small-buttons input[type="button"] {
   padding: 2px 5px;
 }
 
