@@ -22,6 +22,7 @@ var VisualizerUI = (function($, window, undefined) {
       var mtime = null;
       var searchConfig = null;
       var coll, doc, args;
+      var pagingOffset = 0;
       var collScroll;
       var docScroll;
       var user = null;
@@ -230,7 +231,12 @@ var VisualizerUI = (function($, window, undefined) {
 
       /* START comment popup - related */
 
+      var cursor = { x: 0, y: 0 };
       var adjustToCursor = function(evt, element, offset, top, right) {
+        if (evt) {
+          cursor.x = evt.clientX;
+          cursor.y = evt.clientY;
+        }
         // get the real width, without wrapping
         element.css({ left: 0, top: 0 });
         var screenHeight = $(window).height();
@@ -241,18 +247,18 @@ var VisualizerUI = (function($, window, undefined) {
         var x, y;
         offset = offset || 0;
         if (top) {
-          y = evt.clientY - elementHeight - offset;
+          y = cursor.y - elementHeight - offset;
           if (y < 0) top = false;
         }
         if (!top) {
-          y = evt.clientY + offset;
+          y = cursor.y + offset;
         }
         if (right) {
-          x = evt.clientX + offset;
+          x = cursor.x + offset;
           if (x >= screenWidth - elementWidth) right = false;
         }
         if (!right) {
-          x = evt.clientX - elementWidth - offset;
+          x = cursor.x - elementWidth - offset;
         }
         if (y < 0) y = 0;
         if (x < 0) x = 0;
@@ -359,6 +365,7 @@ var VisualizerUI = (function($, window, undefined) {
         var drop=$('#norm_info_drop_point_'+infoSeqId);
         if (drop) {
           drop.html(norminfo);
+          adjustToCursor(null, commentPopup, 10, true, true);
         } else {
           console.log('norm info drop point not found!'); //TODO XXX
         }
@@ -1436,7 +1443,7 @@ var VisualizerUI = (function($, window, undefined) {
         dispatcher.post('showForm', [optionsForm]);
       });
       // make nice-looking buttons for checkboxes and radios
-      $('#options_form').find('input[type="checkbox"]').button();
+      $('#options_form').find('input[type="checkbox"], input[type="button"]').button();
       $('#options_form').find('.radio_group').buttonset();
       $('#rapid_model').addClass('ui-widget ui-state-default ui-button-text');
 
@@ -1510,14 +1517,21 @@ var VisualizerUI = (function($, window, undefined) {
         if (code === $.ui.keyCode.TAB) {
           showFileBrowser();
           return false;
+        } else if (evt.shiftKey && code === $.ui.keyCode.RIGHT) {
+          autoPaging(true);
+        } else if (evt.shiftKey && code === $.ui.keyCode.LEFT) {
+          autoPaging(false);
+        } else if (evt.shiftKey && code === $.ui.keyCode.UP) {
+          pagingOffset -= Configuration.pagingStep;
+          if (pagingOffset < 0) pagingOffset = 0;
+          dispatcher.post('setPagingOffset', [pagingOffset, true]);
+        } else if (evt.shiftKey && code === $.ui.keyCode.DOWN) {
+          pagingOffset += Configuration.pagingStep;
+          dispatcher.post('setPagingOffset', [pagingOffset, true]);
         } else if (code == $.ui.keyCode.LEFT) {
           return moveInFileBrowser(-1);
         } else if (code === $.ui.keyCode.RIGHT) {
           return moveInFileBrowser(+1);
-        } else if (evt.shiftKey && code === $.ui.keyCode.UP) {
-          autoPaging(true);
-        } else if (evt.shiftKey && code === $.ui.keyCode.DOWN) {
-          autoPaging(false);
         } else if ((Util.isMac ? evt.metaKey : evt.ctrlKey) && code == 'F'.charCodeAt(0)) {
           evt.preventDefault();
           showSearchForm();
@@ -1739,6 +1753,8 @@ var VisualizerUI = (function($, window, undefined) {
         coll = _coll;
         doc = _doc;
         args = _args;
+        if (!args.edited) pagingOffset = 0;
+        dispatcher.post('setPagingOffset', [pagingOffset]);
 
         // if we have a specific document, hide the "no document" message
         if (_doc) {
@@ -2200,8 +2216,22 @@ var VisualizerUI = (function($, window, undefined) {
       });
 
       $('#type_collapse_limit').change(function(evt) {
-        Configuration.typeCollapseLimit = parseInt($(this).val(), 10);
-        console.log("changed to", Configuration.typeCollapseLimit);
+        Configuration.typeCollapseLimit = parseInt($(this).val(), 10) || 0;
+        dispatcher.post('configurationChanged');
+      });
+
+      $('#paging_size').change(function(evt) {
+        Configuration.pagingSize = parseInt($(this).val(), 10) || 0;
+        dispatcher.post('configurationChanged');
+      });
+      $('#paging_step').change(function(evt) {
+        Configuration.pagingStep = parseInt($(this).val(), 10) || 0;
+        dispatcher.post('configurationChanged');
+      });
+      $('#paging_clear').click(function(evt) {
+        Configuration.pagingSize = 0;
+        Configuration.pagingStep = 0;
+        $('#paging_step, #paging_size').val('');
         dispatcher.post('configurationChanged');
       });
 
@@ -2262,6 +2292,10 @@ var VisualizerUI = (function($, window, undefined) {
 
         // Type Collapse Limit
         $('#type_collapse_limit')[0].value = Configuration.typeCollapseLimit;
+
+        // Paging
+        $('#paging_size')[0].value = Configuration.pagingSize || '';
+        $('#paging_step')[0].value = Configuration.pagingStep || '';
       }
 
       $('#prev').button().click(function() {

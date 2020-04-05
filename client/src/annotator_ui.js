@@ -35,6 +35,7 @@ var AnnotatorUI = (function($, window, undefined) {
       var lastStartRec = null;
       var lastEndRec = null;
       var inForm = false;
+      var normalizations = {};
 
       var draggedArcHeight = 30;
       var maxNormSearchHistory = 10;
@@ -143,7 +144,6 @@ var AnnotatorUI = (function($, window, undefined) {
           return;
         }
 
-        if (!keymap) return;
 
         // disable shortcuts when working with elements that you could
         // conceivably type in
@@ -154,17 +154,73 @@ var AnnotatorUI = (function($, window, undefined) {
         if (nodeName == 'textarea' || nodeName == 'select') return;
 
         var prefix = '';
-        if (evt.altKey) {
-          prefix = "A-";
-        }
         if (Util.isMac ? evt.metaKey : evt.ctrlKey) {
-          prefix = "C-";
+          prefix += "C-";
+        }
+        if (evt.altKey) {
+          prefix += "A-";
         }
         if (evt.shiftKey) {
-          prefix = "S-";
+          prefix += "S-";
         }
-        var binding = keymap[prefix + code];
-        if (!binding) binding = keymap[prefix + String.fromCharCode(code)];
+        var key = String.fromCharCode(code);
+
+        // repeat last action on the match focus (the current search result)
+        if (prefix + key == 'C-H') {
+          if (args.matchfocus) {
+            var valency = args.matchfocus[0].length;
+            if (valency == 2) { // text offsets
+              if (spanOptions) { // previous span edit exists
+                if (spanOptions.action == 'createSpan' && !spanOptions.id) {
+                  // new
+                  spanOptions.offsets = args.matchfocus;
+                  spanFormSubmit();
+                  dispatcher.post('logAction', ['spanSearchCreated']);
+                } else {
+                  // edit
+                  var spanId = Object.keys(data.spans).find(function(spanId) {
+                    return Util.isEqual(data.spans[spanId].offsets, args.matchfocus);
+                  });
+                  if (spanId) {
+                    spanOptions.id = spanId;
+                    var span = data.spans[spanId];
+                    if (spanOptions.action == 'deleteSpan') {
+                      spanOptions.type = span.type;
+                      deleteSpan();
+                      dispatcher.post('logAction', ['spanSearchDeleted']);
+                    } else if (spanOptions.action == 'createSpan') {
+                      // modify: type, attributes, normalizations, comment
+                      spanOptions.offsets = span.offsets;
+                      spanFormSubmit();
+                      dispatcher.post('logAction', ['spanSearchModified']);
+                    } else {
+                      //TODO
+                      console.log("Not implemented yet");
+                    }
+                  }
+                }
+              } else { // no previous span edit, so bring up the dialog
+                var spanText = data.text.substring(args.matchfocus[0][0], args.matchfocus[0][1]);
+                spanOptions = {
+                  action: 'createSpan',
+                  offsets: args.matchfocus
+                }
+                fillSpanTypesAndDisplayForm(evt, spanText, null);
+                // for precise timing, log annotation display to user.
+                dispatcher.post('logAction', ['spanSearchSelected']);
+              }
+            } else if (valency == 1) { // span ID
+              let spanId = args.matchfocus[0][0];
+            } else if (valency == 3) { // relationship; XXX TODO not sure what to do with this
+            }
+          }
+          evt.preventDefault();
+          return false;
+        }
+
+        if (!keymap) return;
+
+        var binding = keymap[prefix + code] || keymap[prefix + key];
         if (binding) {
           var boundInput = $('#' + binding)[0];
           if (boundInput && !boundInput.disabled) {
@@ -846,27 +902,32 @@ var AnnotatorUI = (function($, window, undefined) {
 
           // fill if found (NOTE: only shows last on multiple)
           var normFilled = false;
+          normalizations = {};
           $.each(span ? span.normalizations : [], function(normNo, norm) {
             var refDb = norm[0], refId = norm[1], refText = norm[2];
             $normDb.val(refDb);
             // could the DB selector be set? (i.e. is refDb configured?)
             if ($normDb.val() == refDb) {
-              // DB is OK, set the rest also
-              $normId.val(refId);
-              oldSpanNormIdValue = refId;
-              $normText.val(refText);
-              // TODO: check if ID is valid
-              $normId.addClass('valid_value')
-              normFilled = true;
+              if (!normFilled) normFilled = refDb;
+              if (!normalizations[refDb]) normalizations[refDb] = []
+              normalizations[refDb].push([refId, refText]);
             } else {
               // can't set the DB selector; assume DB is not configured,
               // warn and leave blank (will remove norm when dialog is OK'd)
               dispatcher.post('messages', [[['Warning: '+refDb+' not configured, removing normalization.', 'warning']]]);
             }
           });
-
-          // if there is no existing normalization, show valid ones
-          if (!normFilled) {
+          if (normFilled) {
+            // DB is OK, set the rest also
+            var norm = normalizations[normFilled][0];
+            oldSpanNormIdValue = norm[0];
+            $normId.val(norm[0]);
+            $normText.val(norm[1]);
+            // TODO: check if ID is valid
+            console.log(normalizations, normFilled);
+            $normId.attr('data-value', normalizations[normFilled].length == 1 ? 'valid' : 'multi')
+          } else {
+            // if there is no existing normalization, show valid ones
             showValidNormalizations();
           }
 
@@ -1076,15 +1137,15 @@ var AnnotatorUI = (function($, window, undefined) {
           return false;
         }        
         // set input style according to whether we have a valid value
-        var $idinput = $('#span_norm_id');
+        var $normId = $('#span_norm_id');
         // TODO: make sure the key echo in the response matches the
         // current value of the $idinput
-        $idinput.removeClass('valid_value').removeClass('invalid_value');
+        $normId.attr('data-value', null);
         if (response.value === null) {
-          $idinput.addClass('invalid_value');
+          $normId.addClass('invalid_value');
           hideNormalizationRefLink();
         } else {
-          $idinput.addClass('valid_value');
+          $normId.attr('data-value', 'valid');
           updateNormalizationRefLink();
         }
         $('#span_norm_txt').val(response.value);
@@ -1093,10 +1154,30 @@ var AnnotatorUI = (function($, window, undefined) {
       // on any change to the normalization DB, clear everything and
       // update link
       var spanNormDbUpdate = function(evt) {
-        clearNormalizationUI();
+        var normDb = $('span_norm_db').val();
+        if (normalizations[normDb]) {
+          var norm = normalizations[normDb][0];
+          $('#span_norm_id').val(norm[0]).
+              attr('data-value', normalizations[normFilled].length == 1 ? 'valid' : 'multi')
+          $('#span_norm_txt').val(norm[1]);
+        } else {
+          clearNormalizationUI();
+        }
         updateNormalizationDbLink();
       }
       $('#span_norm_db').change(spanNormDbUpdate);
+
+      // if there's multiple normalisations for the type, allow selection
+      var spanNormSelect = function(evt) {
+        var normDb = $('#span_norm_db').val();
+        if (normalizations[normDb].length > 1) {
+          showNormSearchDialog();
+          setSpanNormSearchResults({
+            header: ['ID', 'Text'],
+            items: normalizations[normDb],
+          });
+        }
+      }
 
       // on any change to the normalization ID, update the text of the
       // reference
@@ -1116,9 +1197,12 @@ var AnnotatorUI = (function($, window, undefined) {
           }
           oldSpanNormIdValue = key;
         }
+        // TODO make it possible for multiple types of normalisations
+        // to survive to save
       }
       // see http://stackoverflow.com/questions/1948332/detect-all-changes-to-a-input-type-text-immediately-using-jquery
-      $('#span_norm_id').bind('propertychange keyup input paste', spanNormIdUpdate);
+      $('#span_norm_id').bind('propertychange keyup input paste', spanNormIdUpdate).
+          bind('click', spanNormSelect);
       // nice-looking select for normalization
       $('#span_norm_db').addClass('ui-widget ui-state-default ui-button-text');
 
@@ -1278,17 +1362,10 @@ var AnnotatorUI = (function($, window, undefined) {
         setNormSearchSubmit(false);
       });
       var showNormSearchDialog = function() {
-        // if we already have non-empty ID and normalized string,
-        // use these as default; otherwise take default search string
-        // from annotated span and clear ID entry
-        if (!$('#span_norm_id').val().match(/^\s*$/) &&
-            !$('#span_norm_txt').val().match(/^\s*$/)) {
-          $('#norm_search_id').val($('#span_norm_id').val());
-          $('#norm_search_query').val($('#span_norm_txt').val());
-        } else {
-          $('#norm_search_id').val('');
-          $('#norm_search_query').val($('#span_selected').text());
-        }
+        // take default search string from annotated span and clear ID entry
+        // (if the selected string was correct, search wouldn't be necessary)
+        $('#norm_search_id').val('');
+        $('#norm_search_query').val($('#span_selected').text());
         // blank the table
         $('#norm_search_result_select thead').empty();
         $('#norm_search_result_select tbody').empty();        
@@ -1593,15 +1670,15 @@ var AnnotatorUI = (function($, window, undefined) {
 
       var tryToAnnotate = function(evt) {
         var sel = window.getSelection();
-        var chunkIndexFrom = sel.anchorNode && $(sel.anchorNode.parentNode).attr('data-chunk-id');
         var theFocusNode = sel.focusNode;
+        if (!theFocusNode) return;
+
+        var chunkIndexFrom = sel.anchorNode && $(sel.anchorNode.parentNode).attr('data-chunk-id');
         var chunkIndexTo;
-        if (theFocusNode) {
+        chunkIndexTo = $(theFocusNode.parentNode).attr('data-chunk-id');
+        if (!chunkIndexTo) {
+          theFocusNode = $(theFocusNode).children()[0].firstChild;
           chunkIndexTo = $(theFocusNode.parentNode).attr('data-chunk-id');
-          if (!chunkIndexTo) {
-            theFocusNode = $(theFocusNode).children()[0].firstChild;
-            chunkIndexTo = $(theFocusNode.parentNode).attr('data-chunk-id');
-          }
         }
         // var chunkIndexTo = sel.focusNode && ($(sel.focusNode.parentNode).attr('data-chunk-id') || $(sel.focusNode).children().first().attr('data-chunk-id'));
 
@@ -1766,7 +1843,7 @@ var AnnotatorUI = (function($, window, undefined) {
                             }, 'suggestedSpanTypes']);
           }
         }
-      };      
+      };
 
       var onMouseUp = function(evt) {
         if (that.user === null) return;
@@ -1863,7 +1940,7 @@ var AnnotatorUI = (function($, window, undefined) {
       var collapseHandler = function(evt) {
         toggleCollapsible($(evt.target));
       }
-      $('#arc_roles, #span_roles').on('click', '.collapser', collapseHandler);
+      $('#arc_roles, #entity_types').on('click', '.collapser', collapseHandler);
 
       var spanFormSubmitRadio = function(evt) {
         if (Configuration.confirmModeOn) {
@@ -2240,7 +2317,7 @@ var AnnotatorUI = (function($, window, undefined) {
         var $normText = $('#span_norm_txt');
         $normId.val('');
         oldSpanNormIdValue = '';
-        $normId.removeClass('valid_value').removeClass('invalid_value');
+        $normId.attr('data-value', null);
         $normText.val('');
         updateNormalizationRefLink();
       }
